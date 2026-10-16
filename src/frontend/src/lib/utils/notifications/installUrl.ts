@@ -11,8 +11,11 @@ import { millisToNanos } from "$lib/utils/time";
 import { encodeLinkToken, LINK_TOKEN_LIFETIME_MS } from "./linkToken";
 
 /**
- * The installed app's own path. It exists for iOS alone, where web push needs a Home
- * Screen app.
+ * The installed app's own path, which is also its manifest scope and start url. It
+ * exists for iOS alone, where web push needs a Home Screen app.
+ *
+ * Everything inside the app is a path under this one, so the pages and the worker
+ * compose it rather than spelling the prefix again.
  *
  * Must match `id`, `start_url` and `scope` in `static/ios-icp-alerts.webmanifest`, which
  * `webmanifest.test.ts` asserts.
