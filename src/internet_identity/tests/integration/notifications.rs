@@ -1283,19 +1283,22 @@ mod browser_queue {
         Ok(())
     }
 
+    /// A caller the authorization resolves to neither a browser nor a routing app is
+    /// told its key is not one of this identity's, and not that something went wrong
+    /// inside the canister.
     #[test]
     fn should_refuse_a_caller_that_is_no_browser_of_the_identity() -> Result<(), RejectResponse> {
         let env = env();
         let (canister_id, anchor, _, _) = install_with_browser(&env);
 
-        assert!(matches!(
+        assert_eq!(
             browser_get_next_notification(&env, canister_id, principal_2(), next_request(anchor))?,
-            Err(GetNextNotificationError::InternalCanisterError(_))
-        ));
-        assert!(matches!(
+            Err(GetNextNotificationError::InvalidBrowserKey)
+        );
+        assert_eq!(
             browser_remove_notification(&env, canister_id, principal_2(), remove_request(anchor))?,
-            Err(RemoveNotificationError::InternalCanisterError(_))
-        ));
+            Err(RemoveNotificationError::InvalidBrowserKey)
+        );
         Ok(())
     }
 }
@@ -1534,6 +1537,10 @@ mod claims {
 
     /// The claiming identity's own consent is what the caller check is: a browser of
     /// another identity cannot route this one's notifications through an app.
+    /// An app may act for the identities that route through it and for no others, so
+    /// naming one that does not is refused rather than answered. Pointing at the record
+    /// is not enough on its own: an identity that points at it but has switched delivery
+    /// off is refused in the same way.
     #[test]
     fn should_refuse_a_claim_for_an_anchor_the_caller_is_no_browser_of(
     ) -> Result<(), RejectResponse> {
@@ -1556,6 +1563,13 @@ mod claims {
 
     /// A signature from a browser with no app hands over nothing, and says so rather
     /// than writing a reference to a record that does not exist.
+    /// Turning the app off is one identity's choice about delivery and never a
+    /// subscription removal: the subscription is the app's and shared, so removing it
+    /// would silence everyone else too.
+    ///
+    /// It does end the app's standing to act for that one identity, which is a different
+    /// thing from the registration going away. The app still holds it and still delivers
+    /// through it for every identity that has it on.
     #[test]
     fn should_refuse_a_claim_whose_offering_browser_points_at_nothing() -> Result<(), RejectResponse>
     {
