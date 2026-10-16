@@ -443,7 +443,6 @@ test.describe("notifications on a Home Screen app", () => {
     // A message while it is off. The canister skips a reference the identity turned off
     // when it picks who to send to, so nothing is dispatched for this one at all.
     const before = await counted();
-    const whileOff = relay.received();
     await someoneElseSends("while it was off");
 
     // The pass that drops it has to have run while the switch was still off, because the
@@ -455,14 +454,19 @@ test.describe("notifications on a Home Screen app", () => {
     // race this test lost rather than behaviour it means to pin.
     await settings.waitForTimeout(DISPATCH_PASSES_WITHIN_MS);
 
+    // What the switch promises is that the message never reaches the screen, and that is
+    // what is asserted. The relay's count cannot say it: it counts every wake-up posted
+    // to this endpoint, and an entry with anything still queued is woken again on a timer,
+    // so a slow worker that has not yet fetched an earlier notification raises the count
+    // for a reason that has nothing to do with the message being silenced.
+    expect(
+      (await shownByTheWorker(app.context)).map((one) => one.body),
+      "the message that arrived while the switch was off was shown anyway",
+    ).not.toContain("while it was off");
+
     // And on again, which needs no install: the app is still there and still registered.
     await notifications.click();
     await expect(notifications).toBeChecked({ timeout: 30_000 });
-
-    expect(
-      relay.received(),
-      "a wake-up was posted for a message that arrived while the switch was off",
-    ).toBe(whileOff);
 
     await expectDelivery(
       app,
