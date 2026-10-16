@@ -8,10 +8,11 @@ use internet_identity_interface::internet_identity::types::{
     GetNotificationDelegationResponse, GetWebPushSubscriptionStatusRequest,
     LinkNotificationAppError, LinkNotificationAppRequest, NotificationAppInfo,
     NotificationConsentGrantedRequest, NotificationDelegationError, NotificationGrantConsentError,
-    NotificationGrantConsentRequest, NotificationRevokeConsentError,
+    NotificationGrantConsentRequest, NotificationId, NotificationRevokeConsentError,
     NotificationRevokeConsentRequest, PrepareNotificationDelegationRequest,
-    PrepareNotificationDelegationResponse, RemoveNotificationError, RemoveNotificationRequest,
-    RemoveNotificationResponse, RemoveWebPushSubscriptionError, RemoveWebPushSubscriptionRequest,
+    PrepareNotificationDelegationResponse, ProbeNotificationAppError, ProbeNotificationAppRequest,
+    RemoveNotificationError, RemoveNotificationRequest, RemoveNotificationResponse,
+    RemoveWebPushSubscriptionError, RemoveWebPushSubscriptionRequest,
     SetNotificationAppEnabledError, SetNotificationAppEnabledRequest, SetWebPushSubscriptionError,
     SetWebPushSubscriptionRequest, WebPushSubscriptionStatus,
 };
@@ -257,6 +258,23 @@ pub fn get_notification_app_status(
         canister_id,
         sender,
         "get_notification_app_status",
+        (request,),
+    )
+    .map(|(x,)| x)
+}
+
+pub fn probe_notification_app(
+    env: &PocketIc,
+    canister_id: CanisterId,
+    sender: Principal,
+    request: ProbeNotificationAppRequest,
+) -> Result<Result<NotificationId, ProbeNotificationAppError>, RejectResponse> {
+    call_candid_as(
+        env,
+        canister_id,
+        RawEffectivePrincipal::None,
+        sender,
+        "probe_notification_app",
         (request,),
     )
     .map(|(x,)| x)

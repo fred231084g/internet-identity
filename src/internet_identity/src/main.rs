@@ -428,8 +428,13 @@ fn get_notification_app_status(
     let Ok((anchor, browser_id)) = check_browser_authorization(request.anchor_number) else {
         return None;
     };
-    anchor.notification_app_info(browser_id, |app_id| {
-        state::storage_borrow(|storage| storage.notification_app(app_id))
+    let reference = anchor.notification_app(browser_id)?;
+    let app = state::storage_borrow(|storage| storage.notification_app(reference.app_id))?;
+    Some(NotificationAppInfo {
+        subscribed: app.webpush_subscription.is_some(),
+        enabled: reference.enabled,
+        last_seen_ns: app.last_used,
+        pending_probe: anchor.pending_probe(browser_id, ic_cdk::api::time()),
     })
 }
 
@@ -461,7 +466,66 @@ fn set_notification_app_enabled(
     })
 }
 
-/// Points this browser at the app another identity on it offered.
+/// Wakes the Home Screen app this browser points at, and answers which probe to watch.
+///
+/// The browser watches for that notification leaving its queue. An empty pending probe
+/// says the entry is no longer queued and nothing more: the app may have taken it, a
+/// full queue may have evicted it, or the relay post may have failed and dropped it.
+/// What proves the app is alive is `last_seen_ns`, stamped on the call only a live app
+/// makes, so that is what the page reads the answer off.
+///
+/// Queued for this browser's entry, so an app on another device cannot answer this:
+/// what is waiting is this identity's, on this device, and only the app this browser
+/// points at is woken for it.
+///
+/// A browser that already has a probe outstanding is given that one back rather than a
+/// second. One probe is the whole of the question, so a page that remounts would pay for
+/// an outcall that can tell it nothing the first is not already out finding.
+///
+/// A push to an app that is gone comes back 404 or 410, which deletes the record and
+/// every reference to it, so the browser's next read finds no app and offers the install.
+/// That is the whole point: there is no other way to tell a live app from a deleted one.
+#[update]
+fn probe_notification_app(
+    request: ProbeNotificationAppRequest,
+) -> Result<NotificationId, ProbeNotificationAppError> {
+    // The deployment-wide switch, the same one every other call about an app asks.
+    // Without it the only answer left is `NotReachable`, which says the app this
+    // browser points at may be gone, on a deployment that would not have woken it
+    // whatever state it is in.
+    if !notifications::notifications_enabled() {
+        return Err(ProbeNotificationAppError::InternalCanisterError(
+            notifications::NOT_ENABLED.to_string(),
+        ));
+    }
+    let (anchor, browser_id) = check_browser_authorization(request.anchor_number)
+        .map_err(|_| ProbeNotificationAppError::InvalidBrowserKey)?;
+    if anchor.notification_app(browser_id).is_none() {
+        return Err(ProbeNotificationAppError::NoNotificationApp);
+    }
+    let now_ns = ic_cdk::api::time();
+    if let Some(outstanding) = anchor.pending_probe(browser_id, now_ns) {
+        return Ok(outstanding);
+    }
+
+    notifications::dispatch::notify_identity(
+        request.anchor_number,
+        browser_id,
+        NotificationEvent::NotificationsOn(identity_for_notification(&anchor)),
+        notifications::dispatch::IdentityNotification::Probe,
+        now_ns,
+    )
+    .ok_or(ProbeNotificationAppError::NotReachable)
+}
+
+/// Which identity a notification is about, in the terms the user knows it by.
+fn identity_for_notification(anchor: &storage::anchor::Anchor) -> IdentityForNotification {
+    IdentityForNotification {
+        anchor_number: anchor.anchor_number(),
+        name: anchor.name(),
+    }
+}
+
 /// Points this browser at the Home Screen app another identity on the device has.
 ///
 /// Authorized twice over, and both are load-bearing. The caller is a browser of the
@@ -509,11 +573,24 @@ fn claim_notification_app(
         .app_id;
 
     anchor.point_at_notification_app(browser_id, app_id);
+    let identity = identity_for_notification(&anchor);
     state::storage_borrow_mut(|storage| {
         storage
             .write(anchor)
             .map_err(|err| ClaimNotificationAppError::InternalCanisterError(format!("{err:?}")))
-    })
+    })?;
+
+    // Said on the device, because the device is where it matters and nothing there is
+    // showing this screen: an app serving several identities is the only place that can
+    // say which one was just switched on.
+    notifications::dispatch::notify_identity(
+        request.anchor_number,
+        browser_id,
+        NotificationEvent::NotificationsOn(identity),
+        notifications::dispatch::IdentityNotification::News,
+        ic_cdk::api::time(),
+    );
+    Ok(())
 }
 
 /// The identities this Home Screen app delivers for.
@@ -630,13 +707,15 @@ fn browser_get_next_notification(
     request: GetNextNotificationRequest,
 ) -> Result<GetNextNotificationResponse, GetNextNotificationError> {
     let request: ValidatedGetNextNotificationRequest = request.try_into()?;
-    let (anchor, browser_id, _) = check_notification_authorization(request.anchor_number)
-        .map_err(|_| GetNextNotificationError::InvalidBrowserKey)?;
+    let (anchor, browser_id, notification_caller) =
+        check_notification_authorization(request.anchor_number)
+            .map_err(|_| GetNextNotificationError::InvalidBrowserKey)?;
 
     Ok(GetNextNotificationResponse {
         notification: notifications::browser_queue::next_to_show(
             &anchor,
             browser_id,
+            &notification_caller,
             ic_cdk::api::time(),
         ),
     })
@@ -649,20 +728,24 @@ fn browser_remove_notification(
     request: RemoveNotificationRequest,
 ) -> Result<RemoveNotificationResponse, RemoveNotificationError> {
     let request: ValidatedRemoveNotificationRequest = request.try_into()?;
-    let (anchor, browser_id, _) = check_notification_authorization(request.anchor_number)
-        .map_err(|_| RemoveNotificationError::InvalidBrowserKey)?;
+    let (anchor, browser_id, notification_caller) =
+        check_notification_authorization(request.anchor_number)
+            .map_err(|_| RemoveNotificationError::InvalidBrowserKey)?;
 
-    // Nothing at all for a browser caller, which is the common one: the stamp lands only
-    // where the caller resolves to an app record. For a Home Screen app it is the one
-    // thing that says it is still installed, since iOS destroys its storage when the
-    // user deletes it and tells nobody.
-    state::storage_borrow_mut(|storage| {
-        storage.stamp_notification_app_use(caller(), ic_cdk::api::time())
-    });
+    let now_ns = ic_cdk::api::time();
+    // An app acknowledging what it showed is the moment we learn it is still installed,
+    // and the only one: nothing else tells us.
+    state::storage_borrow_mut(|storage| storage.stamp_notification_app_use(caller(), now_ns));
 
-    notifications::browser_queue::remove_shown(anchor, browser_id, &request.notification)
-        .map(|()| RemoveNotificationResponse {})
-        .map_err(RemoveNotificationError::InternalCanisterError)
+    notifications::browser_queue::remove_shown(
+        anchor,
+        browser_id,
+        &notification_caller,
+        &request.notification,
+        now_ns,
+    )
+    .map(|()| RemoveNotificationResponse {})
+    .map_err(RemoveNotificationError::InternalCanisterError)
 }
 
 #[update]
@@ -1603,11 +1686,18 @@ mod v2_api {
             Some(stored_verified_emails)
         };
 
-        let browsers = state::anchor(identity_number).browsers_info(|app_id| {
-            if !notifications::notifications_enabled() {
-                return None;
+        let browsers = state::anchor(identity_number).browsers_info(|app_id, enabled| {
+            let app = state::storage_borrow(|storage| storage.notification_app(app_id));
+            NotificationAppInfo {
+                subscribed: app
+                    .as_ref()
+                    .is_some_and(|app| app.webpush_subscription.is_some()),
+                enabled,
+                last_seen_ns: app.map_or(0, |app| app.last_used),
+                // The identity's own list says which apps it has, not what one browser
+                // asked of one of them: a probe is read where it was sent.
+                pending_probe: None,
             }
-            state::storage_borrow(|storage| storage.notification_app(app_id))
         });
 
         let identity_info = IdentityInfo {
