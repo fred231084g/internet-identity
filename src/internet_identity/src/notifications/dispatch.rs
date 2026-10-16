@@ -435,6 +435,17 @@ fn wake_up_address<'a>(
     app: Option<&'a NotificationApp>,
     now_ns: Timestamp,
 ) -> Option<(&'a WebPushSubscription, String, DeliveryTarget)> {
+    // An entry pointing at an app has put that app between itself and what it is told,
+    // so switching the app off switches this entry off: its own registration, kept from
+    // before the app was installed, is not a way around the user's word. Only the flag
+    // is read here, never the session count, because an entry that is merely signed out
+    // is still an entry the user left switched on.
+    if browser
+        .notification_app
+        .is_some_and(|reference| !reference.enabled)
+    {
+        return None;
+    }
     if now_ns.saturating_sub(browser.last_used) >= BROWSER_GONE_AFTER_NS {
         return None;
     }
@@ -774,6 +785,27 @@ mod tests {
             subscribe(recipient, *browser, RELAY, 0);
         }
         (recipient, browsers)
+    }
+
+    /// Switching delivery off has to stop an app message reaching the device, whatever
+    /// address the entry happens to hold. An entry that kept its own registration from
+    /// before the app was installed is still an entry the user has switched off.
+    #[test]
+    fn an_app_switched_off_is_not_woken_through_the_browser_registration() {
+        setup();
+        let (recipient, browsers) = subscribed_recipient(1);
+        route_through_an_app(recipient, browsers[0], 9, Some(APP_RELAY));
+        let mut stored = anchor(recipient);
+        stored.set_notification_app_enabled(browsers[0], false);
+        storage_borrow_mut(|storage| storage.write(stored)).expect("switching off");
+
+        submit(recipient, 7, 10 * SECOND_NS);
+
+        assert!(
+            plan_pass(MAX_POSTS_PER_PASS, SECOND_NS).is_empty(),
+            "a wake-up was planned for an identity that switched delivery off"
+        );
+        assert!(queued(recipient, browsers[0]).is_empty());
     }
 
     #[test]
