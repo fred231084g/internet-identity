@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clear, createStore, set as idbSet } from "idb-keyval";
 
 /** Lets one test refuse a write, which is the only way the store ends up holding a key
- *  without the successor it announced. */
-const storage = vi.hoisted(() => ({ writesFail: false }));
+ *  without the successor it announced, and one refuse a read, which is what separates
+ *  "this browser holds no key" from "this browser could not be asked". */
+const storage = vi.hoisted(() => ({ writesFail: false, readsFail: false }));
 
 vi.mock("idb-keyval", async (importOriginal) => {
   const actual = await importOriginal<typeof import("idb-keyval")>();
@@ -14,12 +15,24 @@ vi.mock("idb-keyval", async (importOriginal) => {
       storage.writesFail
         ? Promise.reject(new Error("quota exceeded"))
         : actual.set(...args),
+    get: (...args: Parameters<typeof actual.get>) =>
+      storage.readsFail
+        ? Promise.reject(new Error("storage is closed"))
+        : actual.get(...args),
+    keys: (...args: Parameters<typeof actual.keys>) =>
+      storage.readsFail
+        ? Promise.reject(new Error("storage is closed"))
+        : actual.keys(...args),
   };
 });
 import {
   browserKeyIdentity,
   type BrowserProof,
+  BrowserKeyUnreadableError,
   currentBrowserId,
+  notificationAppLinkMessage,
+  registeredIdentityNumbers,
+  signNotificationAppLink,
   StaleBrowserKeyError,
   withBrowserProof,
 } from "./browser-key.store";
@@ -152,6 +165,7 @@ const withoutLockApi = (): void => {
 describe("browser key", () => {
   beforeEach(async () => {
     storage.writesFail = false;
+    storage.readsFail = false;
     await clear(BROWSER_KEY_STORE);
     withoutLockApi();
   });
@@ -372,6 +386,36 @@ describe("browser key", () => {
     await expect(currentBrowserId(IDENTITY)).resolves.toBeUndefined();
   });
 
+  /// The settings list marks the row this browser is, and an unmarked list is what both
+  /// answers come to. Nothing is registered off this, so the two are allowed to arrive as
+  /// the same value here, where the callers that must tell them apart raise instead.
+  it("knows of no browser where storage refuses to answer", async () => {
+    await signIn(IDENTITY, 1, 7);
+    storage.readsFail = true;
+
+    await expect(currentBrowserId(IDENTITY)).resolves.toBeUndefined();
+  });
+
+  it("lists the identities this browser holds a key for", async () => {
+    await signIn(IDENTITY, 1, 7);
+    await signIn(BigInt(10_001), 2, 8);
+
+    await expect(registeredIdentityNumbers()).resolves.toEqual([
+      IDENTITY,
+      BigInt(10_001),
+    ]);
+  });
+
+  /// The service worker asks after each identity in turn on a wake-up. A storage failure
+  /// costs that one notification, and the next wake-up asks again; nothing re-registers
+  /// off an empty list.
+  it("lists no identities where storage refuses to answer", async () => {
+    await signIn(IDENTITY, 1, 7);
+    storage.readsFail = true;
+
+    await expect(registeredIdentityNumbers()).resolves.toEqual([]);
+  });
+
   /**
    * The Web Push endpoints read the browser off the caller, so the identity has to sign
    * as the successor the canister recorded and nothing else.
@@ -390,6 +434,67 @@ describe("browser key", () => {
     await attempt(IDENTITY, 1);
 
     await expect(browserKeyIdentity(IDENTITY)).resolves.toBeUndefined();
+  });
+
+  /**
+   * The two answers send a caller in opposite directions. `undefined` is read as a
+   * browser the canister has never registered, which becomes "this device has no app"
+   * and walks a user who has one through the install again, leaving them with a second
+   * Home Screen icon that orphans the first.
+   */
+  it("keeps storage refusing to answer apart from holding no key", async () => {
+    await signIn(IDENTITY, 1, 7);
+    storage.readsFail = true;
+
+    await expect(browserKeyIdentity(IDENTITY)).rejects.toBeInstanceOf(
+      BrowserKeyUnreadableError,
+    );
+  });
+
+  it("signs a link token with the key an entry holds", async () => {
+    const proof = await signIn(IDENTITY, 1, 7);
+
+    const signature = await signNotificationAppLink({
+      identityNumber: IDENTITY,
+      expiresAtNs: BigInt(5_000),
+    });
+
+    await expect(
+      verify(
+        proof.nextPublicKey,
+        signature!,
+        notificationAppLinkMessage(IDENTITY, BigInt(5_000)),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  /// The canister verifies a link token against the keys of an entry. A key prepared for
+  /// a sign-in that never completed is in no entry, so the token it signs can only be
+  /// refused, and an install link carrying one sends the user through the steps for
+  /// nothing.
+  it("signs no link token before a sign-in has registered the browser", async () => {
+    await attempt(IDENTITY, 1);
+
+    await expect(
+      signNotificationAppLink({
+        identityNumber: IDENTITY,
+        expiresAtNs: BigInt(5_000),
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  /// `undefined` is what the install tab is closed on, so a storage hiccup would shut
+  /// the tab with nothing said and no reason recorded.
+  it("keeps storage refusing to answer apart from having no token to sign", async () => {
+    await signIn(IDENTITY, 1, 7);
+    storage.readsFail = true;
+
+    await expect(
+      signNotificationAppLink({
+        identityNumber: IDENTITY,
+        expiresAtNs: BigInt(5_000),
+      }),
+    ).rejects.toBeInstanceOf(BrowserKeyUnreadableError);
   });
 
   it("has the successor sign for itself, so an unheld key cannot be announced", async () => {
