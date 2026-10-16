@@ -1580,7 +1580,6 @@ impl<M: Memory + Clone> Storage<M> {
         }
     }
 
-
     /// Stores what the app has registered for Web Push, and stamps its liveness.
     ///
     /// The only writer is the app itself. A browser pointing at it turns its own

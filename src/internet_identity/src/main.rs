@@ -462,10 +462,6 @@ fn set_notification_app_enabled(
     })
 }
 
-/// How long an offered handle is worth spending. Both calls are made by one browser,
-/// one straight after the other, so this is a round trip and not a user's attention.
-const NOTIFICATION_APP_OFFER_LIFETIME_NS: u64 = 60 * 1_000_000_000;
-
 /// Points this browser at the app another identity on it offered.
 /// Points this browser at the Home Screen app another identity on the device has.
 ///

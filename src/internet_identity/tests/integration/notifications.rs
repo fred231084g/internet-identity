@@ -1306,6 +1306,12 @@ const TOKEN_VALID_FOR_NS: u64 = 3 * 60 * 1_000_000_000;
 
 /// A canister that notifies, and two identities signed in from a browser each:
 /// `principal_1` on the first, `principal_2` on the second.
+/// The browser each identity signs in from in these fixtures. Named rather than spelled
+/// at every call site, because `link_app` takes the seed and the token has to be minted
+/// by the same browser the canister will verify it against.
+const FIRST_BROWSER_SEED: u8 = 1;
+const SECOND_BROWSER_SEED: u8 = 2;
+
 fn install_with_two_anchors(env: &PocketIc) -> (CanisterId, AnchorNumber, AnchorNumber) {
     let canister_id =
         install_ii_canister_with_arg(env, II_WASM.clone(), arg_with_notifications_enabled());
