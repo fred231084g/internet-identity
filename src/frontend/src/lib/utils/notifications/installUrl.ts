@@ -51,6 +51,25 @@ export const prepareInstallUrl = async (
 };
 
 /**
+ * Where the install lives, or `undefined` where this browser has nothing to send the
+ * user to: no key to sign a token with, or a key store that could not be read.
+ *
+ * The reason is logged rather than raised. The two read the same way on screen, and a
+ * rejection would leave the blank tab the press opened standing with nothing in it and
+ * nothing to close it.
+ */
+export const signedInstallUrl = async (
+  identityNumber: bigint,
+): Promise<string | undefined> => {
+  try {
+    return await prepareInstallUrl(identityNumber);
+  } catch (error) {
+    console.error(error);
+    return undefined;
+  }
+};
+
+/**
  * Opens the install in a tab of its own, reporting whether the browser allowed it.
  *
  * Must be called straight from the click, which is the only time a browser allows it.
@@ -92,4 +111,31 @@ export const openInstallTab = (
     },
   );
   return true;
+};
+
+/** A tab opened inside the press, waiting for somewhere to go. */
+export interface PendingInstallTab {
+  /** Whether the browser allowed the tab. A refused one is not a failure: the screen
+   *  behind it carries the link, which the user can follow themselves. */
+  opened: boolean;
+  /** Points it at the install, or closes it where there is nothing to point it at. */
+  point: (url: string | undefined) => void;
+}
+
+/**
+ * Opens the install tab and hands back the way to point it, for a press that only knows
+ * where the install lives once the canister has answered and the token is signed.
+ *
+ * Must be called straight from the click. Both entry points onto the install do this,
+ * and both have to open before they await anything, which is what makes it one thing
+ * rather than a pair of promise dances.
+ */
+export const openPendingInstallTab = (): PendingInstallTab => {
+  let point: (url: string | undefined) => void = () => {};
+  const opened = openInstallTab(
+    new Promise<string | undefined>((resolve) => {
+      point = resolve;
+    }),
+  );
+  return { opened, point };
 };

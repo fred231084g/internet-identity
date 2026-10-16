@@ -45,3 +45,26 @@ export const writeMcpConfig = async (
     throw new Error(result.Err);
   }
 };
+
+/**
+ * This browser's id as the settings page reads it. `"unread"` while the lookup is still
+ * running, `undefined` where it answered that no sign-in has registered this browser.
+ */
+export type BrowserIdRead = number | "unread" | undefined;
+
+/**
+ * The browser the notifications switch acts on, or `undefined` where there is none to
+ * act on yet.
+ *
+ * A browser with no registration has no key to sign the install link with and no entry
+ * for the canister to attach a subscription to, so the switch has nothing it can do:
+ * pressing it opens a tab that closes itself on iOS, and in a browser it replaces the
+ * push subscription before the registration refuses, leaving a live subscription no
+ * stored key matches. Settings cannot mint a registration either, because that needs
+ * the session key a sign-in holds, so the section is kept off the page.
+ *
+ * The read that has not landed yet is not an absence: the section would flash away as
+ * the lookup answers.
+ */
+export const knownBrowserId = (read: BrowserIdRead): number | undefined =>
+  typeof read === "number" ? read : undefined;

@@ -30,6 +30,16 @@ const write = (value: NotificationDiagnostics): void => {
 
 export const readDiagnostics = (): NotificationDiagnostics => read();
 
+/**
+ * What to show and record for a failure that carries no wording worth improving on: the
+ * service worker, the push subscription, a key or the store it lives in.
+ *
+ * Shown as it came, which makes a screenshot enough to act on. Both entry points onto
+ * the switch report the same way, so they read it the same way too.
+ */
+export const failureMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 export const recordFailure = (
   reason: FailureReason,
   message?: string,
